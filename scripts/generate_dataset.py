@@ -8,9 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sequence.core.game import GameConfig
+from sequence.core.game import Game, GameConfig
 from sequence.agents.mcts_agent import MCTSAgent
-from sequence.simulation.tournament import Tournament
 from sequence.simulation.dataset import DatasetWriter
 
 
@@ -23,7 +22,6 @@ def main():
     parser.add_argument(
         "--determinizations", type=int, default=10, help="MCTS determinizations"
     )
-    parser.add_argument("--workers", type=int, default=4, help="Parallel workers")
     parser.add_argument(
         "--output",
         type=str,
@@ -36,49 +34,55 @@ def main():
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"Generating {args.games} games: MCTS({args.mcts_iterations}) vs MCTS({args.mcts_iterations})")
-    print(f"Determinizations: {args.determinizations}, Workers: {args.workers}")
+    mcts_iters = args.mcts_iterations
+    mcts_dets = args.determinizations
+
+    print(f"Generating {args.games} games: MCTS({mcts_iters}) vs MCTS({mcts_iters})")
+    print(f"Determinizations: {mcts_dets}")
     print(f"Output: {output_path}")
     print()
 
-    def make_mcts():
-        return MCTSAgent(
-            iterations=args.mcts_iterations,
-            num_determinizations=args.determinizations,
-            rollout_depth=30,
-        )
-
-    config = GameConfig(max_turns=args.max_turns)
-    tournament = Tournament(
-        agent_factories=[make_mcts, make_mcts],
-        num_games=args.games,
-        config=config,
-        swap_sides=False,
-        max_workers=args.workers,
-        show_progress=True,
-    )
+    writer = DatasetWriter(str(output_path))
+    total_moves = 0
+    team0_wins = 0
+    team1_wins = 0
 
     t0 = time.time()
-    result = tournament.run()
-    elapsed = time.time() - t0
-    records = result.records
-
-    # Write to JSONL
-    writer = DatasetWriter(str(output_path))
-    for record in records:
+    for i in range(args.games):
+        config = GameConfig(seed=i, max_turns=args.max_turns)
+        game = Game(
+            agent_factories=[
+                lambda: MCTSAgent(iterations=mcts_iters, num_determinizations=mcts_dets, rollout_depth=30),
+                lambda: MCTSAgent(iterations=mcts_iters, num_determinizations=mcts_dets, rollout_depth=30),
+            ],
+            config=config,
+        )
+        record = game.play()
         writer.write(record)
-    writer.close()
 
-    # Stats
-    total_moves = sum(r.total_turns for r in records)
-    team0_wins = sum(1 for r in records if r.winner == 0)
-    team1_wins = sum(1 for r in records if r.winner == 1)
-    draws = len(records) - team0_wins - team1_wins
+        total_moves += record.total_turns
+        if record.winner == 0:
+            team0_wins += 1
+        elif record.winner == 1:
+            team1_wins += 1
+
+        elapsed = time.time() - t0
+        avg_per_game = elapsed / (i + 1)
+        remaining = avg_per_game * (args.games - i - 1)
+        print(
+            f"  Game {i + 1}/{args.games}: {record.total_turns} turns, "
+            f"winner=Team{record.winner} [{elapsed:.0f}s elapsed, ~{remaining:.0f}s remaining]"
+        )
+
+    writer.close()
+    elapsed = time.time() - t0
+    draws = args.games - team0_wins - team1_wins
 
     print(f"\nDone in {elapsed:.1f}s")
-    print(f"Games: {len(records)}, Total moves: {total_moves}")
+    print(f"Games: {args.games}, Total moves: {total_moves}")
     print(f"Team 0 wins: {team0_wins}, Team 1 wins: {team1_wins}, Draws: {draws}")
-    print(f"Avg game length: {total_moves / len(records):.1f} turns")
+    if args.games > 0:
+        print(f"Avg game length: {total_moves / args.games:.1f} turns")
     print(f"Dataset written to: {output_path}")
 
 

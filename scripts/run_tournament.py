@@ -15,18 +15,41 @@ from sequence.agents.scorer_agent import ScorerAgent
 from sequence.agents.defensive_agent import DefensiveAgent
 from sequence.agents.offensive_agent import OffensiveAgent
 from sequence.agents.lookahead_agent import LookaheadAgent
-from sequence.scoring.scoring_function import ScoringFunction, BALANCED_WEIGHTS
+from sequence.scoring.scoring_function import BALANCED_WEIGHTS
 from sequence.simulation.tournament import Tournament
 
 
+# Named functions (not lambdas) so they can be pickled for multiprocessing
+def _make_random():
+    return RandomAgent()
+
+def _make_greedy():
+    return GreedyAgent()
+
+def _make_scorer():
+    return ScorerAgent(BALANCED_WEIGHTS)
+
+def _make_defensive():
+    return DefensiveAgent()
+
+def _make_offensive():
+    return OffensiveAgent()
+
+def _make_lookahead1():
+    return LookaheadAgent(depth=1)
+
+def _make_lookahead2():
+    return LookaheadAgent(depth=2)
+
+
 AGENT_REGISTRY = {
-    "random": lambda: RandomAgent(),
-    "greedy": lambda: GreedyAgent(),
-    "scorer": lambda: ScorerAgent(ScoringFunction(BALANCED_WEIGHTS)),
-    "defensive": lambda: DefensiveAgent(),
-    "offensive": lambda: OffensiveAgent(),
-    "lookahead1": lambda: LookaheadAgent(depth=1),
-    "lookahead2": lambda: LookaheadAgent(depth=2),
+    "random": _make_random,
+    "greedy": _make_greedy,
+    "scorer": _make_scorer,
+    "defensive": _make_defensive,
+    "offensive": _make_offensive,
+    "lookahead1": _make_lookahead1,
+    "lookahead2": _make_lookahead2,
 }
 
 
@@ -69,12 +92,22 @@ def main():
                 config=config,
                 swap_sides=True,
                 max_workers=args.workers,
-                show_progress=True,
+                show_progress=False,
             )
             result = tournament.run()
 
-            wins_a = sum(1 for r in result.records if r.winner == 0)
-            wins_b = sum(1 for r in result.records if r.winner == 1)
+            # Count wins by agent name, not team index (handles swapped sides)
+            type_a = type(AGENT_REGISTRY[name_a]()).__name__
+            type_b = type(AGENT_REGISTRY[name_b]()).__name__
+            wins_a = 0
+            wins_b = 0
+            for r in result.records:
+                if r.winner is not None:
+                    winner_name = r.agent_names[r.winner]
+                    if winner_name == type_a:
+                        wins_a += 1
+                    elif winner_name == type_b:
+                        wins_b += 1
             draws = len(result.records) - wins_a - wins_b
 
             results[name_a][name_b] = wins_a
