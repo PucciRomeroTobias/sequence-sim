@@ -6,13 +6,17 @@ import math
 import random
 from typing import TYPE_CHECKING
 
-from ..core.types import TeamId
+from ..core.board import ALL_LINES, CARD_TO_POSITIONS
+from ..core.types import CORNER, TeamId
 from .base import Agent
 
 if TYPE_CHECKING:
     from ..core.actions import Action
     from ..core.game import GameConfig
     from ..core.game_state import GameState
+
+# Pre-compute TeamId instances to avoid repeated enum construction
+_TEAM_IDS = [TeamId(0), TeamId(1), TeamId(2)]
 
 
 class MCTSNode:
@@ -50,17 +54,49 @@ class MCTSNode:
     def ucb1(self, exploration_constant: float) -> float:
         if self.visits == 0:
             return float("inf")
-        exploitation = self.total_value / self.visits
-        exploration = exploration_constant * math.sqrt(
-            math.log(self.parent.visits) / self.visits
+        return (
+            self.total_value / self.visits
+            + exploration_constant * math.sqrt(math.log(self.parent.visits) / self.visits)
         )
-        return exploitation + exploration
 
     def best_child(self, c: float) -> MCTSNode:
         return max(self.children.values(), key=lambda n: n.ucb1(c))
 
     def is_fully_expanded(self) -> bool:
         return len(self.untried_actions) == 0
+
+
+def _fast_board_eval(chips, team_val: int, num_teams: int) -> float:
+    """Fast board evaluation using numpy for the rollout heuristic.
+
+    Returns value in [0, 1] range.
+    """
+    score = 0.0
+    for line in ALL_LINES:
+        own = 0
+        opp = 0
+        for pos in line:
+            v = int(chips[pos.row, pos.col])
+            if v == team_val or v == CORNER:
+                own += 1
+            elif v >= 0 and v != CORNER and v != -1:
+                opp += 1
+        if opp == 0:
+            if own == 5:
+                return 1.0  # We completed a sequence
+            elif own == 4:
+                score += 50
+            elif own == 3:
+                score += 5
+        if own == 0:
+            if opp == 5:
+                return 0.0  # Opponent completed
+            elif opp == 4:
+                score -= 40
+            elif opp == 3:
+                score -= 4
+    # Normalize to [0, 1] with sigmoid
+    return 1.0 / (1.0 + math.exp(-score / 100.0))
 
 
 class MCTSAgent(Agent):
@@ -113,9 +149,12 @@ class MCTSAgent(Agent):
         # Pre-filter if too many actions
         filtered = self._filter_root_actions(state, legal_actions)
 
+        # Build action-to-index map for fast lookup
+        action_to_idx = {a: i for i, a in enumerate(filtered)}
+
         # Aggregate visit counts across determinizations
-        total_visits: dict[int, int] = {}  # action index -> total visits
-        total_values: dict[int, float] = {}
+        total_visits = [0] * len(filtered)
+        total_values = [0.0] * len(filtered)
 
         iters_per_det = max(1, self._iterations // self._num_determinizations)
 
@@ -128,28 +167,29 @@ class MCTSAgent(Agent):
 
             # Collect visit counts from root children
             for action, child in root.children.items():
-                try:
-                    idx = filtered.index(action)
-                except ValueError:
-                    continue
-                total_visits[idx] = total_visits.get(idx, 0) + child.visits
-                total_values[idx] = total_values.get(idx, 0.0) + child.total_value
+                idx = action_to_idx.get(action)
+                if idx is not None:
+                    total_visits[idx] += child.visits
+                    total_values[idx] += child.total_value
 
         # Store for dataset
         self.last_mcts_visits = {}
         self.last_mcts_values = {}
-        for idx, visits in total_visits.items():
-            key = str(filtered[idx])
-            self.last_mcts_visits[key] = visits
-            self.last_mcts_values[key] = (
-                total_values.get(idx, 0.0) / visits if visits > 0 else 0.0
-            )
+        best_idx = 0
+        best_v = -1
+        for idx in range(len(filtered)):
+            v = total_visits[idx]
+            if v > 0:
+                key = str(filtered[idx])
+                self.last_mcts_visits[key] = v
+                self.last_mcts_values[key] = total_values[idx] / v
+            if v > best_v:
+                best_v = v
+                best_idx = idx
 
-        # Choose action with most visits
-        if not total_visits:
+        if best_v <= 0:
             return self._rng.choice(legal_actions)
 
-        best_idx = max(total_visits, key=total_visits.get)
         return filtered[best_idx]
 
     def _filter_root_actions(
@@ -161,7 +201,6 @@ class MCTSAgent(Agent):
 
         from ..core.actions import ActionType
 
-        # Quick scoring for filtering
         scored: list[tuple[float, int]] = []
         for i, action in enumerate(actions):
             score = 0.0
@@ -169,7 +208,7 @@ class MCTSAgent(Agent):
                 pos = action.position
                 center_dist = abs(pos.row - 4.5) + abs(pos.col - 4.5)
                 score += max(0, 5 - center_dist)
-                # Check if completes sequence
+                # Check if completes sequence (expensive but worth it for filtering)
                 new_state = state.apply_action(action)
                 if new_state.board.count_sequences(state.current_team) > state.board.count_sequences(state.current_team):
                     score += 10000
@@ -183,43 +222,30 @@ class MCTSAgent(Agent):
     def _determinize(self, state: GameState) -> GameState:
         """Create a determinized state by sampling plausible opponent hands."""
         from ..core.card import make_full_deck
-        from ..core.types import TeamId
 
         team = self._team
         assert team is not None
 
         new_state = state.copy()
 
-        # Determine which cards are "seen" (in our hand, on board as chips don't
-        # correspond to cards, or discarded)
-        # For simplicity: cards in our hand are known. The unseen cards pool is
-        # all cards minus our hand minus cards we've tracked.
-        # Since we don't track discards perfectly, we use a conservative approach:
-        # pool = 2 full decks - our hand
+        # Pool = 2 full decks minus our hand
         all_cards = make_full_deck() + make_full_deck()
-
-        # Remove our hand from pool
         pool = list(all_cards)
         for card in state.hands.get(team.value, []):
             if card in pool:
                 pool.remove(card)
 
-        # Remove cards known to be in the deck's draw pile + discard
-        # (We don't have perfect info, but we approximate)
         self._rng.shuffle(pool)
 
-        # Assign hands to opponents from pool
         pool_idx = 0
         for t in range(state.num_teams):
             if t == team.value:
                 continue
             opp_hand_size = len(state.hands.get(t, []))
-            # If we don't know the hand size, use a default
             if opp_hand_size == 0:
                 opp_hand_size = 7 if state.num_teams == 2 else 6
-            hand = pool[pool_idx : pool_idx + opp_hand_size]
+            new_state.hands[t] = pool[pool_idx : pool_idx + opp_hand_size]
             pool_idx += opp_hand_size
-            new_state.hands[t] = hand
 
         return new_state
 
@@ -231,16 +257,14 @@ class MCTSAgent(Agent):
         self._backpropagate(node, value)
 
     def _select(self, node: MCTSNode) -> MCTSNode:
-        """Select a promising node using UCB1."""
+        c = self._exploration_constant
         while node.is_fully_expanded() and node.children:
-            node = node.best_child(self._exploration_constant)
+            node = node.best_child(c)
         return node
 
     def _expand(self, node: MCTSNode) -> MCTSNode:
-        """Expand by adding one untried action."""
         if not node.untried_actions:
             return node
-
         action = node.untried_actions.pop()
         new_state = node.state.apply_action(action)
         child = MCTSNode(new_state, parent=node, action=action)
@@ -248,67 +272,64 @@ class MCTSAgent(Agent):
         return child
 
     def _simulate(self, node: MCTSNode) -> float:
-        """Random rollout from node, return value for our team."""
-        from ..core.actions import Action, ActionType
-        from ..core.board import CARD_TO_POSITIONS
-        from ..core.types import EMPTY
-
+        """Optimized random rollout from node."""
         state = node.state
-
-        # Light rollout: instead of full copy + apply_action loop,
-        # work on a mutable copy and use fast random action selection
         board = state.board.copy()
         hands = {t: list(h) for t, h in state.hands.items()}
         deck = state.deck.copy()
         current_team_val = state.current_team.value
         num_teams = state.num_teams
+        seq_to_win = state.sequences_to_win
         rng = self._rng
+        team_val = self._team.value
+        chips = board.chips  # Direct numpy array reference
 
         for _ in range(self._rollout_depth):
-            # Quick terminal check
+            # Quick terminal check (direct attribute access, no method call)
             for tv in range(num_teams):
-                if board.count_sequences(TeamId(tv)) >= state.sequences_to_win:
-                    return 1.0 if tv == self._team.value else 0.0
+                if len(board._sequences[tv]) >= seq_to_win:
+                    return 1.0 if tv == team_val else 0.0
 
             hand = hands[current_team_val]
             if not hand:
                 break
 
-            # Fast random action: pick random card from hand, try to play it
+            # Fast random action selection
             rng.shuffle(hand)
             played = False
+            team_id = _TEAM_IDS[current_team_val]
+
             for card in hand:
                 if card.is_two_eyed_jack:
-                    empty = list(board.empty_positions)
-                    if empty:
-                        pos = rng.choice(empty)
+                    ep = board.empty_positions
+                    if ep:
+                        pos = rng.choice(list(ep))
                         hand.remove(card)
-                        board.place_chip(pos, TeamId(current_team_val))
-                        board.check_new_sequences(pos, TeamId(current_team_val))
+                        board.place_chip(pos, team_id)
+                        board.check_new_sequences(pos, team_id)
                         drawn = deck.draw()
                         if drawn:
                             hand.append(drawn)
                         played = True
                         break
                 elif card.is_one_eyed_jack:
-                    # Skip one-eyed jacks in fast rollout for speed
-                    continue
+                    continue  # Skip removal in fast rollout
                 else:
-                    positions = CARD_TO_POSITIONS.get(card, [])
-                    valid = [p for p in positions if board.is_empty(p)]
-                    if valid:
-                        pos = rng.choice(valid)
-                        hand.remove(card)
-                        board.place_chip(pos, TeamId(current_team_val))
-                        board.check_new_sequences(pos, TeamId(current_team_val))
-                        drawn = deck.draw()
-                        if drawn:
-                            hand.append(drawn)
-                        played = True
-                        break
+                    positions = CARD_TO_POSITIONS.get(card)
+                    if positions:
+                        valid = [p for p in positions if chips[p.row, p.col] == -1]
+                        if valid:
+                            pos = rng.choice(valid)
+                            hand.remove(card)
+                            board.place_chip(pos, team_id)
+                            board.check_new_sequences(pos, team_id)
+                            drawn = deck.draw()
+                            if drawn:
+                                hand.append(drawn)
+                            played = True
+                            break
 
             if not played:
-                # Discard a random card as dead
                 card = hand.pop()
                 deck.discard(card)
                 drawn = deck.draw()
@@ -317,27 +338,14 @@ class MCTSAgent(Agent):
 
             current_team_val = (current_team_val + 1) % num_teams
 
-        # Truncated — use heuristic evaluation
-        team = self._team
-        assert team is not None
-        own_seqs = board.count_sequences(team)
-        opp_seqs = max(
-            (board.count_sequences(TeamId(t)) for t in range(num_teams) if t != team.value),
-            default=0,
-        )
-        diff = own_seqs - opp_seqs
-        return 0.5 + 0.25 * diff
+        # Truncated — use fast board evaluation
+        return _fast_board_eval(chips, team_val, num_teams)
 
     def _backpropagate(self, node: MCTSNode, value: float) -> None:
-        """Propagate the simulation result up the tree."""
+        team = self._team
         while node is not None:
             node.visits += 1
-            # Value is from our team's perspective
-            # For opponent nodes, invert the value
-            if (
-                node.parent is not None
-                and node.parent.state.current_team != self._team
-            ):
+            if node.parent is not None and node.parent.state.current_team != team:
                 node.total_value += 1.0 - value
             else:
                 node.total_value += value

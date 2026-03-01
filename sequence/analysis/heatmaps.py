@@ -133,8 +133,21 @@ def sequence_participation(records: list[GameRecord]) -> np.ndarray:
 
 
 def _parse_position_key(key: str) -> tuple[int, int] | None:
-    """Parse a position key string into (row, col)."""
-    # Handle formats: "3,4", "(3, 4)", "(3,4)"
+    """Parse a position key string into (row, col).
+
+    Handles formats:
+    - "3,4", "(3, 4)", "(3,4)"
+    - "Place(QC@Position(row=6, col=0))"
+    - "Remove(JH@Position(row=3, col=5))"
+    """
+    import re
+
+    # Try "Position(row=X, col=Y)" format first
+    m = re.search(r'row=(\d+),\s*col=(\d+)', key)
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+
+    # Try simple "3,4" or "(3, 4)" format
     cleaned = key.strip().strip("()")
     parts = cleaned.split(",")
     if len(parts) == 2:

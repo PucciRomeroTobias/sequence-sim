@@ -19,33 +19,36 @@ from .scoring_function import (
 NUM_WEIGHTS = len(fields(ScoringWeights))
 
 
-def _play_game(
-    weights_array: np.ndarray,
-    opponent_factory: Callable[[], object],
-    seed: int,
-) -> int:
-    """Play a single game and return 1 for win, 0 otherwise.
-
-    Standalone function so it can be pickled for multiprocessing.
-    Imports are deferred to avoid circular dependencies.
-    """
-    from ..agents.scorer_agent import ScorerAgent
-    from ..core.game import Game, GameConfig
-
-    w = ScoringWeights.from_array(weights_array)
-    game = Game(
-        agent_factories=[lambda: ScorerAgent(w), opponent_factory],
-        config=GameConfig(seed=seed, max_turns=300),
-    )
-    record = game.play()
-    return 1 if record.winner == 0 else 0
-
-
 def _default_opponent_factory() -> object:
     """Create a default GreedyAgent opponent. Deferred import."""
     from ..agents.greedy_agent import GreedyAgent
 
     return GreedyAgent()
+
+
+def _evaluate_weights_vs_greedy(args: tuple[np.ndarray, int]) -> float:
+    """Evaluate a weight vector by playing games against GreedyAgent.
+
+    Module-level function so it can be pickled for multiprocessing.
+    """
+    from ..agents.scorer_agent import ScorerAgent
+    from ..core.game import Game, GameConfig
+
+    weights_array, games_per_eval = args
+    w = ScoringWeights.from_array(weights_array)
+    wins = 0
+    for seed in range(games_per_eval):
+        game = Game(
+            agent_factories=[
+                lambda w=w: ScorerAgent(w),
+                _default_opponent_factory,
+            ],
+            config=GameConfig(seed=seed, max_turns=300),
+        )
+        record = game.play()
+        if record.winner == 0:
+            wins += 1
+    return wins / games_per_eval
 
 
 class GeneticOptimizer:
@@ -99,21 +102,20 @@ class GeneticOptimizer:
 
         Returns win rate as a float in [0, 1].
         """
-        wins = 0
-        for i in range(self.games_per_eval):
-            wins += _play_game(weights, self.opponent_factory, seed=i)
-        return wins / self.games_per_eval
+        return _evaluate_weights_vs_greedy((weights, self.games_per_eval))
 
     def _evaluate_population(self, population: list[np.ndarray]) -> list[float]:
         """Evaluate fitness for the entire population, optionally in parallel."""
+        args_list = [(w, self.games_per_eval) for w in population]
+
         if self.num_workers <= 1:
-            return [self.evaluate_fitness(w) for w in population]
+            return [_evaluate_weights_vs_greedy(a) for a in args_list]
 
         fitnesses: list[float | None] = [None] * len(population)
         with ProcessPoolExecutor(max_workers=self.num_workers) as pool:
             future_to_idx = {
-                pool.submit(self.evaluate_fitness, w): idx
-                for idx, w in enumerate(population)
+                pool.submit(_evaluate_weights_vs_greedy, a): idx
+                for idx, a in enumerate(args_list)
             }
             for future in as_completed(future_to_idx):
                 idx = future_to_idx[future]
@@ -213,10 +215,7 @@ class CMAESOptimizer:
 
     def _neg_win_rate(self, weights_array: np.ndarray) -> float:
         """Objective: negative win rate (for minimization)."""
-        wins = 0
-        for i in range(self.games_per_eval):
-            wins += _play_game(weights_array, self.opponent_factory, seed=i)
-        return -(wins / self.games_per_eval)
+        return -_evaluate_weights_vs_greedy((weights_array, self.games_per_eval))
 
     def optimize(
         self, initial_weights: ScoringWeights | None = None

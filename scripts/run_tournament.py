@@ -36,10 +36,16 @@ def _make_offensive():
     return OffensiveAgent()
 
 def _make_lookahead1():
-    return LookaheadAgent(depth=1)
+    from sequence.scoring.scoring_function import ScoringFunction, DEFENSIVE_WEIGHTS
+    return LookaheadAgent(depth=1, scoring_fn=ScoringFunction(DEFENSIVE_WEIGHTS))
 
 def _make_lookahead2():
-    return LookaheadAgent(depth=2)
+    from sequence.scoring.scoring_function import ScoringFunction, DEFENSIVE_WEIGHTS
+    return LookaheadAgent(depth=2, scoring_fn=ScoringFunction(DEFENSIVE_WEIGHTS))
+
+def _make_mcts_light():
+    from sequence.agents.mcts_agent import MCTSAgent
+    return MCTSAgent(iterations=200, num_determinizations=5, rollout_depth=20, max_root_actions=12)
 
 
 AGENT_REGISTRY = {
@@ -50,6 +56,7 @@ AGENT_REGISTRY = {
     "offensive": _make_offensive,
     "lookahead1": _make_lookahead1,
     "lookahead2": _make_lookahead2,
+    "mcts": _make_mcts_light,
 }
 
 

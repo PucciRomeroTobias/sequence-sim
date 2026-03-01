@@ -65,8 +65,15 @@ class ScoringWeights:
             [getattr(self, f.name) for f in fields(self)], dtype=np.float64
         )
 
+    def to_dict(self) -> dict[str, float]:
+        return asdict(self)
+
     def to_json(self) -> str:
-        return json.dumps(asdict(self))
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def from_dict(cls, d: dict[str, float]) -> ScoringWeights:
+        return cls(**d)
 
     @classmethod
     def from_json(cls, s: str) -> ScoringWeights:

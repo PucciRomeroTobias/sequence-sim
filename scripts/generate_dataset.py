@@ -42,39 +42,38 @@ def main():
     print(f"Output: {output_path}")
     print()
 
-    writer = DatasetWriter(str(output_path))
     total_moves = 0
     team0_wins = 0
     team1_wins = 0
 
     t0 = time.time()
-    for i in range(args.games):
-        config = GameConfig(seed=i, max_turns=args.max_turns)
-        game = Game(
-            agent_factories=[
-                lambda: MCTSAgent(iterations=mcts_iters, num_determinizations=mcts_dets, rollout_depth=30),
-                lambda: MCTSAgent(iterations=mcts_iters, num_determinizations=mcts_dets, rollout_depth=30),
-            ],
-            config=config,
-        )
-        record = game.play()
-        writer.write(record)
+    with DatasetWriter(str(output_path)) as writer:
+        for i in range(args.games):
+            config = GameConfig(seed=i, max_turns=args.max_turns)
+            game = Game(
+                agent_factories=[
+                    lambda: MCTSAgent(iterations=mcts_iters, num_determinizations=mcts_dets, rollout_depth=30),
+                    lambda: MCTSAgent(iterations=mcts_iters, num_determinizations=mcts_dets, rollout_depth=30),
+                ],
+                config=config,
+            )
+            record = game.play()
+            writer.write(record)
 
-        total_moves += record.total_turns
-        if record.winner == 0:
-            team0_wins += 1
-        elif record.winner == 1:
-            team1_wins += 1
+            total_moves += record.total_turns
+            if record.winner == 0:
+                team0_wins += 1
+            elif record.winner == 1:
+                team1_wins += 1
 
-        elapsed = time.time() - t0
-        avg_per_game = elapsed / (i + 1)
-        remaining = avg_per_game * (args.games - i - 1)
-        print(
-            f"  Game {i + 1}/{args.games}: {record.total_turns} turns, "
-            f"winner=Team{record.winner} [{elapsed:.0f}s elapsed, ~{remaining:.0f}s remaining]"
-        )
+            elapsed = time.time() - t0
+            avg_per_game = elapsed / (i + 1)
+            remaining = avg_per_game * (args.games - i - 1)
+            print(
+                f"  Game {i + 1}/{args.games}: {record.total_turns} turns, "
+                f"winner=Team{record.winner} [{elapsed:.0f}s elapsed, ~{remaining:.0f}s remaining]"
+            )
 
-    writer.close()
     elapsed = time.time() - t0
     draws = args.games - team0_wins - team1_wins
 
