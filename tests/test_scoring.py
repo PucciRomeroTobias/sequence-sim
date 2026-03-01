@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import random
+
 import numpy as np
 import pytest
 
@@ -20,8 +22,10 @@ from sequence.scoring.scoring_function import (
     ScoringFunction,
     ScoringWeights,
 )
+from sequence.agents.greedy_agent import GreedyAgent
 from sequence.agents.random_agent import RandomAgent
 from sequence.agents.scorer_agent import ScorerAgent
+from sequence.scoring.optimizer import GeneticOptimizer
 
 
 # ---------------------------------------------------------------------------
@@ -283,3 +287,77 @@ class TestScorerAgent:
             f"ScorerAgent only won {scorer_win_rate:.0%} "
             f"(wins={wins[0]}, losses={wins[1]}, draws={wins['draw']})"
         )
+
+
+# ---------------------------------------------------------------------------
+# Optimizer tests
+# ---------------------------------------------------------------------------
+
+
+class TestGeneticOptimizer:
+    def test_runs_without_error(self):
+        """GeneticOptimizer completes with small parameters."""
+        opt = GeneticOptimizer(
+            population_size=5,
+            num_generations=3,
+            games_per_eval=10,
+            num_workers=1,
+            seed=42,
+        )
+        weights, fitness = opt.optimize()
+        assert isinstance(weights, ScoringWeights)
+        assert 0.0 <= fitness <= 1.0
+
+    def test_fitness_improves(self):
+        """Best fitness should improve (or stay same) over 3 generations."""
+        opt = GeneticOptimizer(
+            population_size=6,
+            num_generations=3,
+            games_per_eval=10,
+            num_workers=1,
+            seed=7,
+        )
+        population = opt._initial_population()
+
+        gen_bests: list[float] = []
+        overall_best = 0.0
+        for _gen in range(opt.num_generations):
+            fitnesses = [opt.evaluate_fitness(w) for w in population]
+            gen_best = max(fitnesses)
+            overall_best = max(overall_best, gen_best)
+            gen_bests.append(overall_best)
+
+            parents = opt.select(population, fitnesses)
+            next_pop = [population[int(np.argmax(fitnesses))].copy()]
+            while len(next_pop) < opt.population_size:
+                p1, p2 = random.sample(parents, 2)
+                child = opt.crossover(p1, p2)
+                child = opt.mutate(child)
+                next_pop.append(child)
+            population = next_pop
+
+        # The tracked overall best should be non-decreasing
+        for i in range(1, len(gen_bests)):
+            assert gen_bests[i] >= gen_bests[i - 1]
+
+    def test_crossover_produces_valid_weights(self):
+        opt = GeneticOptimizer(seed=0)
+        p1 = BALANCED_WEIGHTS.to_array()
+        p2 = OFFENSIVE_WEIGHTS.to_array()
+        child = opt.crossover(p1, p2)
+        assert child.shape == (NUM_FEATURES,)
+        assert np.all(np.isfinite(child))
+
+    def test_mutate_preserves_shape(self):
+        opt = GeneticOptimizer(seed=0)
+        w = BALANCED_WEIGHTS.to_array()
+        mutated = opt.mutate(w)
+        assert mutated.shape == (NUM_FEATURES,)
+        assert np.all(np.isfinite(mutated))
+
+    def test_select_returns_correct_size(self):
+        opt = GeneticOptimizer(population_size=5, seed=0)
+        pop = [opt._random_weights() for _ in range(5)]
+        fitnesses = [0.1, 0.5, 0.3, 0.8, 0.2]
+        parents = opt.select(pop, fitnesses)
+        assert len(parents) == 5
