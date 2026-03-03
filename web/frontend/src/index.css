@@ -1,0 +1,373 @@
+@import "tailwindcss";
+
+:root {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: rgba(255, 255, 255, 0.9);
+  background-color: #1a1a2e;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+/* ============================================ */
+/* Board */
+/* ============================================ */
+
+.board-container {
+  background: linear-gradient(145deg, #2d5016, #1a3a0a);
+  border-radius: 12px;
+  padding: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  border: 2px solid #3d6b1e;
+}
+
+.board-grid {
+  display: grid;
+  grid-template-columns: repeat(10, 88px);
+  grid-template-rows: repeat(10, 62px);
+  gap: 2px;
+}
+
+.board-cell {
+  width: 88px;
+  height: 62px;
+  border-radius: 3px;
+  position: relative;
+  cursor: default;
+  overflow: hidden;
+  background: white;
+  transition: transform 0.1s;
+}
+
+.board-cell img {
+  /* Rotate card 90deg to show landscape */
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 62px;
+  height: 88px;
+  transform: translate(-50%, -50%) rotate(90deg);
+  object-fit: fill;
+  pointer-events: none;
+}
+
+.board-cell.cell-highlighted {
+  cursor: pointer;
+  box-shadow: 0 0 12px 3px rgba(255, 220, 50, 0.7);
+  border: 2px solid #ffd700;
+  transform: scale(1.05);
+  z-index: 2;
+}
+
+.board-cell.cell-last-ai {
+  box-shadow: 0 0 10px 2px rgba(255, 80, 80, 0.6);
+  border: 2px solid #ff4444;
+}
+
+.board-cell.cell-seq-blue {
+  box-shadow: 0 0 10px 3px rgba(77, 166, 255, 0.7);
+  border: 2px solid #4da6ff;
+}
+
+.board-cell.cell-seq-red {
+  box-shadow: 0 0 10px 3px rgba(255, 85, 85, 0.7);
+  border: 2px solid #ff5555;
+}
+
+/* ============================================ */
+/* Chips */
+/* ============================================ */
+
+.chip {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 2.5px solid white;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5), inset 0 -2px 4px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+}
+
+.chip-blue {
+  background: radial-gradient(circle at 35% 35%, #4da6ff, #1a6bcc);
+  border-color: #a8d4ff;
+}
+
+.chip-red {
+  background: radial-gradient(circle at 35% 35%, #ff5555, #cc1a1a);
+  border-color: #ffa8a8;
+}
+
+.chip-corner {
+  background: radial-gradient(circle at 35% 35%, #ffd700, #b8960f);
+  border-color: #fff3b0;
+  width: 28px;
+  height: 28px;
+}
+
+/* ============================================ */
+/* Player Hand */
+/* ============================================ */
+
+.hand-container {
+  text-align: center;
+}
+
+.hand-label {
+  color: #aaa;
+  font-size: 0.85rem;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+.hand-cards {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.hand-card {
+  width: 72px;
+  height: 100px;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+  border: 2px solid transparent;
+  position: relative;
+  background: white;
+}
+
+.hand-card img {
+  object-fit: contain;
+}
+
+.hand-card:hover {
+  transform: translateY(-8px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+}
+
+.hand-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+.hand-card-selected {
+  border-color: #ffd700;
+  transform: translateY(-12px);
+  box-shadow: 0 0 16px rgba(255, 215, 0, 0.5);
+}
+
+.hand-card-disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.hand-card-disabled:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+.hand-card-dead {
+  border-color: #ff4444;
+  opacity: 0.7;
+}
+
+.hand-card-dead:hover {
+  border-color: #ff6666;
+}
+
+.dead-badge {
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #cc3333;
+  color: white;
+  font-size: 0.65rem;
+  font-weight: bold;
+  padding: 3px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: background 0.2s;
+  white-space: nowrap;
+}
+
+.dead-badge:hover {
+  background: #ee4444;
+}
+
+/* ============================================ */
+/* Game Info */
+/* ============================================ */
+
+.game-info {
+  width: 100%;
+  max-width: 700px;
+}
+
+.scores {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.score-box {
+  padding: 8px 20px;
+  border-radius: 10px;
+  text-align: center;
+  border: 2px solid transparent;
+  min-width: 100px;
+}
+
+.score-blue {
+  background: rgba(26, 107, 204, 0.2);
+  border-color: rgba(77, 166, 255, 0.3);
+}
+
+.score-red {
+  background: rgba(204, 26, 26, 0.2);
+  border-color: rgba(255, 85, 85, 0.3);
+}
+
+.score-active {
+  border-color: rgba(255, 215, 0, 0.6) !important;
+  box-shadow: 0 0 12px rgba(255, 215, 0, 0.2);
+}
+
+.pulse-blue {
+  animation: pulseBlue 1.5s ease-in-out infinite;
+}
+
+.pulse-red {
+  animation: pulseRed 1.5s ease-in-out infinite;
+}
+
+@keyframes pulseBlue {
+  0%, 100% { box-shadow: 0 0 8px rgba(77, 166, 255, 0.3); }
+  50% { box-shadow: 0 0 20px rgba(77, 166, 255, 0.6), 0 0 40px rgba(77, 166, 255, 0.2); }
+}
+
+@keyframes pulseRed {
+  0%, 100% { box-shadow: 0 0 8px rgba(255, 85, 85, 0.3); }
+  50% { box-shadow: 0 0 20px rgba(255, 85, 85, 0.6), 0 0 40px rgba(255, 85, 85, 0.2); }
+}
+
+.turn-indicator {
+  font-size: 0.7rem;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.turn-indicator-blue {
+  color: #4da6ff;
+  background: rgba(77, 166, 255, 0.15);
+}
+
+.turn-indicator-red {
+  color: #ff8888;
+  background: rgba(255, 85, 85, 0.15);
+}
+
+.thinking-dots::after {
+  content: "";
+  animation: dots 1.5s steps(4, end) infinite;
+}
+
+@keyframes dots {
+  0% { content: ""; }
+  25% { content: "."; }
+  50% { content: ".."; }
+  75% { content: "..."; }
+}
+
+.score-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #aaa;
+}
+
+.score-value {
+  font-size: 1.5rem;
+  font-weight: bold;
+}
+
+.score-middle {
+  text-align: center;
+  min-width: 140px;
+}
+
+.turn-info {
+  color: #ccc;
+  font-size: 0.9rem;
+}
+
+.your-turn {
+  color: #4da6ff;
+  font-weight: bold;
+  margin-top: 2px;
+}
+
+.ai-turn {
+  color: #ff8888;
+  font-weight: bold;
+  margin-top: 2px;
+}
+
+.winner-text {
+  font-size: 1.2rem;
+  font-weight: bold;
+  color: #ffd700;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.new-game-btn, .reset-btn {
+  background: #2d5016;
+  color: white;
+  border: 1px solid #4da644;
+  padding: 6px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: background 0.2s;
+}
+
+.new-game-btn:hover, .reset-btn:hover {
+  background: #3d6b1e;
+}
+
+.reset-btn {
+  margin-top: 6px;
+  background: #333;
+  border-color: #555;
+  font-size: 0.75rem;
+  padding: 4px 12px;
+}
+
+.reset-btn:hover {
+  background: #444;
+}
+
+.last-ai-move {
+  text-align: center;
+  color: #ff8888;
+  font-size: 0.8rem;
+  margin-top: 6px;
+}

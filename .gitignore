@@ -4,6 +4,18 @@ __pycache__/
 dist/
 build/
 .venv/
+
+# Data: training datasets are large, exclude them
 data/datasets/
 data/weights/
 data/results/
+data/nn/training_data*.npz
+
+# Web frontend
+web/frontend/node_modules/
+
+# Temp/local
+.claude/review-loop.log
+.claude/review-loop.local.md
+optimized_weights_*.json
+PLAN_NEURAL_NET.md
