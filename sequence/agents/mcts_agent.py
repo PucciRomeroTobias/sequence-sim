@@ -7,6 +7,7 @@ import random
 from typing import TYPE_CHECKING
 
 from ..core.board import ALL_LINES, CARD_TO_POSITIONS
+from ..core.card_tracker import CardTracker
 from ..core.types import CORNER, TeamId
 from .base import Agent
 
@@ -17,6 +18,9 @@ if TYPE_CHECKING:
 
 # Pre-compute TeamId instances to avoid repeated enum construction
 _TEAM_IDS = [TeamId(0), TeamId(1), TeamId(2)]
+
+# Epsilon for heuristic rollout (30% chance of heuristic move)
+_ROLLOUT_EPSILON = 0.3
 
 
 class MCTSNode:
@@ -99,6 +103,49 @@ def _fast_board_eval(chips, team_val: int, num_teams: int) -> float:
     return 1.0 / (1.0 + math.exp(-score / 100.0))
 
 
+def _evaluate_rollout_position(
+    pos, chips, team_val: int, opp_vals: set[int],
+) -> int:
+    """Score a position for heuristic rollout. Higher = better.
+
+    Priority levels:
+    - 100: completes a sequence (5 in a row)
+    -  50: extends to 4 in a row
+    -  30: blocks opponent's 4 in a row
+    -  10: extends to 3 in a row
+    -   0: nothing special
+    """
+    from ..core.board import POSITION_TO_LINES
+
+    best = 0
+    line_indices = POSITION_TO_LINES.get(pos, [])
+    for line_idx in line_indices:
+        line = ALL_LINES[line_idx]
+        own = 0
+        opp = 0
+        for lp in line:
+            v = int(chips[lp.row, lp.col])
+            if v == team_val or v == CORNER:
+                own += 1
+            elif v in opp_vals:
+                opp += 1
+
+        # After placing our chip at pos, own count increases by 1
+        if opp == 0:
+            if own == 4:  # Would complete sequence
+                return 100
+            elif own == 3:  # Would make 4
+                best = max(best, 50)
+            elif own == 2:  # Would make 3
+                best = max(best, 10)
+
+        # Blocking: this position prevents opponent from completing
+        if own == 0 and opp == 4:
+            best = max(best, 30)
+
+    return best
+
+
 class MCTSAgent(Agent):
     """Monte Carlo Tree Search agent with Information Set determinization.
 
@@ -115,6 +162,8 @@ class MCTSAgent(Agent):
         scoring_fn: object | None = None,
         max_root_actions: int = 20,
         seed: int | None = None,
+        use_informed_determinization: bool = False,
+        use_heuristic_rollout: bool = False,
     ) -> None:
         self._iterations = iterations
         self._num_determinizations = num_determinizations
@@ -124,6 +173,9 @@ class MCTSAgent(Agent):
         self._max_root_actions = max_root_actions
         self._rng = random.Random(seed)
         self._team: TeamId | None = None
+        self._use_informed_det = use_informed_determinization
+        self._use_heuristic_rollout = use_heuristic_rollout
+        self._tracker: CardTracker | None = None
 
         # Stored after each decision for dataset generation
         self.last_mcts_visits: dict[str, int] | None = None
@@ -131,9 +183,12 @@ class MCTSAgent(Agent):
 
     def notify_game_start(self, team: TeamId, config: GameConfig) -> None:
         self._team = team
+        if self._use_informed_det or self._use_heuristic_rollout:
+            self._tracker = CardTracker(team, config.num_teams)
 
     def notify_action(self, action: Action, team: TeamId) -> None:
-        pass
+        if self._tracker is not None:
+            self._tracker.on_action(action, team)
 
     def choose_action(
         self, state: GameState, legal_actions: list[Action]
@@ -220,20 +275,29 @@ class MCTSAgent(Agent):
         return [actions[i] for _, i in scored[: self._max_root_actions]]
 
     def _determinize(self, state: GameState) -> GameState:
-        """Create a determinized state by sampling plausible opponent hands."""
-        from ..core.card import make_full_deck
+        """Create a determinized state by sampling plausible opponent hands.
 
+        When a CardTracker is available (informed determinization), uses
+        the tracked unknown card pool which excludes played/discarded cards.
+        Otherwise falls back to naive 2-deck pool.
+        """
         team = self._team
         assert team is not None
 
         new_state = state.copy()
 
-        # Pool = 2 full decks minus our hand
-        all_cards = make_full_deck() + make_full_deck()
-        pool = list(all_cards)
-        for card in state.hands.get(team.value, []):
-            if card in pool:
-                pool.remove(card)
+        if self._tracker is not None and self._use_informed_det:
+            # Informed: use tracker's unknown pool (excludes played/discarded)
+            self._tracker.sync_hand(state.hands.get(team.value, []))
+            pool = self._tracker.get_unknown_card_pool()
+        else:
+            # Naive: 2 full decks minus our hand
+            from ..core.card import make_full_deck
+            all_cards = make_full_deck() + make_full_deck()
+            pool = list(all_cards)
+            for card in state.hands.get(team.value, []):
+                if card in pool:
+                    pool.remove(card)
 
         self._rng.shuffle(pool)
 
@@ -272,7 +336,7 @@ class MCTSAgent(Agent):
         return child
 
     def _simulate(self, node: MCTSNode) -> float:
-        """Optimized random rollout from node."""
+        """Optimized rollout from node with optional heuristic guidance."""
         state = node.state
         board = state.board.copy()
         hands = {t: list(h) for t, h in state.hands.items()}
@@ -283,6 +347,7 @@ class MCTSAgent(Agent):
         rng = self._rng
         team_val = self._team.value
         chips = board.chips  # Direct numpy array reference
+        use_heuristic = self._use_heuristic_rollout
 
         for _ in range(self._rollout_depth):
             # Quick terminal check (direct attribute access, no method call)
@@ -294,32 +359,23 @@ class MCTSAgent(Agent):
             if not hand:
                 break
 
-            # Fast random action selection
-            rng.shuffle(hand)
-            played = False
             team_id = _TEAM_IDS[current_team_val]
+            played = False
 
-            for card in hand:
-                if card.is_two_eyed_jack:
-                    ep = board.empty_positions
-                    if ep:
-                        pos = rng.choice(list(ep))
-                        hand.remove(card)
-                        board.place_chip(pos, team_id)
-                        board.check_new_sequences(pos, team_id)
-                        drawn = deck.draw()
-                        if drawn:
-                            hand.append(drawn)
-                        played = True
-                        break
-                elif card.is_one_eyed_jack:
-                    continue  # Skip removal in fast rollout
-                else:
-                    positions = CARD_TO_POSITIONS.get(card)
-                    if positions:
-                        valid = [p for p in positions if chips[p.row, p.col] == -1]
-                        if valid:
-                            pos = rng.choice(valid)
+            # Epsilon-greedy: use heuristic with probability _ROLLOUT_EPSILON
+            if use_heuristic and rng.random() < _ROLLOUT_EPSILON:
+                played = self._heuristic_rollout_move(
+                    hand, board, deck, team_id, chips, num_teams, rng
+                )
+
+            if not played:
+                # Fast random action selection
+                rng.shuffle(hand)
+                for card in hand:
+                    if card.is_two_eyed_jack:
+                        ep = board.empty_positions
+                        if ep:
+                            pos = rng.choice(list(ep))
                             hand.remove(card)
                             board.place_chip(pos, team_id)
                             board.check_new_sequences(pos, team_id)
@@ -328,6 +384,22 @@ class MCTSAgent(Agent):
                                 hand.append(drawn)
                             played = True
                             break
+                    elif card.is_one_eyed_jack:
+                        continue  # Skip removal in fast rollout
+                    else:
+                        positions = CARD_TO_POSITIONS.get(card)
+                        if positions:
+                            valid = [p for p in positions if chips[p.row, p.col] == -1]
+                            if valid:
+                                pos = rng.choice(valid)
+                                hand.remove(card)
+                                board.place_chip(pos, team_id)
+                                board.check_new_sequences(pos, team_id)
+                                drawn = deck.draw()
+                                if drawn:
+                                    hand.append(drawn)
+                                played = True
+                                break
 
             if not played:
                 card = hand.pop()
@@ -340,6 +412,50 @@ class MCTSAgent(Agent):
 
         # Truncated — use fast board evaluation
         return _fast_board_eval(chips, team_val, num_teams)
+
+    @staticmethod
+    def _heuristic_rollout_move(
+        hand, board, deck, team_id, chips, num_teams, rng,
+    ) -> bool:
+        """Try to make a heuristic move during rollout.
+
+        Priority: complete sequence > extend to 4 > block opp 4 > extend to 3.
+        Returns True if a move was made.
+        """
+        team_val = team_id.value
+        opp_vals = set(range(num_teams)) - {team_val}
+        best_card = None
+        best_pos = None
+        best_priority = -1  # Higher is better
+
+        for card in hand:
+            if card.is_jack:
+                continue
+            positions = CARD_TO_POSITIONS.get(card)
+            if not positions:
+                continue
+            for pos in positions:
+                if chips[pos.row, pos.col] != -1:
+                    continue
+                # Evaluate this placement
+                priority = _evaluate_rollout_position(
+                    pos, chips, team_val, opp_vals
+                )
+                if priority > best_priority:
+                    best_priority = priority
+                    best_card = card
+                    best_pos = pos
+
+        if best_card is not None and best_pos is not None and best_priority > 0:
+            hand.remove(best_card)
+            board.place_chip(best_pos, team_id)
+            board.check_new_sequences(best_pos, team_id)
+            drawn = deck.draw()
+            if drawn:
+                hand.append(drawn)
+            return True
+
+        return False
 
     def _backpropagate(self, node: MCTSNode, value: float) -> None:
         team = self._team

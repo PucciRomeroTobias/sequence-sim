@@ -47,6 +47,37 @@ def _make_mcts_light():
     from sequence.agents.mcts_agent import MCTSAgent
     return MCTSAgent(iterations=200, num_determinizations=5, rollout_depth=20, max_root_actions=12)
 
+def _make_smart():
+    from sequence.agents.smart_agent import SmartAgent
+    return SmartAgent(use_lookahead=True, lookahead_candidates=5)
+
+def _make_mcts_informed():
+    from sequence.agents.mcts_agent import MCTSAgent
+    return MCTSAgent(
+        iterations=200, num_determinizations=5, rollout_depth=20,
+        max_root_actions=12, use_informed_determinization=True,
+        use_heuristic_rollout=True,
+    )
+
+
+def _make_neural():
+    from sequence.agents.neural_agent import NeuralAgent
+    return NeuralAgent("data/nn/model.pt", use_lookahead=True)
+
+
+def _make_neural_norm():
+    from sequence.agents.neural_agent import NeuralAgent
+    return NeuralAgent("data/nn/model_norm.pt", use_lookahead=True)
+
+
+def _make_lgbm():
+    from sequence.agents.lgbm_agent import LGBMAgent
+    return LGBMAgent("data/lgbm/model.txt")
+
+def _make_hybrid():
+    from sequence.agents.lgbm_agent import HybridAgent
+    return HybridAgent("data/lgbm/model.txt")
+
 
 AGENT_REGISTRY = {
     "random": _make_random,
@@ -57,7 +88,27 @@ AGENT_REGISTRY = {
     "lookahead1": _make_lookahead1,
     "lookahead2": _make_lookahead2,
     "mcts": _make_mcts_light,
+    "smart": _make_smart,
+    "mcts_informed": _make_mcts_informed,
 }
+
+# Register neural agent only if torch is available
+try:
+    import torch  # noqa: F401
+    AGENT_REGISTRY["neural"] = _make_neural
+    AGENT_REGISTRY["neural_norm"] = _make_neural_norm
+except ImportError:
+    pass
+
+# Register LGBM agent only if lightgbm is available and model exists
+try:
+    import lightgbm  # noqa: F401
+    from pathlib import Path as _Path
+    if _Path("data/lgbm/model.txt").exists():
+        AGENT_REGISTRY["lgbm"] = _make_lgbm
+        AGENT_REGISTRY["hybrid"] = _make_hybrid
+except ImportError:
+    pass
 
 
 def main():

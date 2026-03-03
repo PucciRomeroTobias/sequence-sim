@@ -30,44 +30,121 @@ def main():
         default="ga",
         help="Optimization method",
     )
+    parser.add_argument(
+        "--smart",
+        action="store_true",
+        help="Use SmartAgent (card tracking) instead of ScorerAgent",
+    )
+    parser.add_argument(
+        "--mixed",
+        action="store_true",
+        help="Use mixed opponent pool (Lookahead2 50%%, Greedy 25%%, Defensive 25%%)",
+    )
+    parser.add_argument(
+        "--sigma",
+        type=float,
+        default=5.0,
+        help="Initial sigma for CMA-ES (default: 5.0)",
+    )
+    parser.add_argument(
+        "--lookahead",
+        action="store_true",
+        help="Enable depth-1 lookahead during evaluation (5-10x slower)",
+    )
+    parser.add_argument(
+        "--self-play-rounds",
+        type=int,
+        default=1,
+        help="Number of self-play rounds (each adds best from previous round as opponent)",
+    )
     args = parser.parse_args()
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    from sequence.scoring.optimizer import GeneticOptimizer
+    from sequence.scoring.optimizer import (
+        GeneticOptimizer,
+        add_custom_opponent,
+        clear_custom_opponents,
+    )
 
-    if args.method == "ga":
-        print(f"Running Genetic Algorithm:")
-        print(f"  Generations: {args.generations}")
-        print(f"  Population: {args.population}")
-        print(f"  Games per eval: {args.games_per_eval}")
-        print()
+    self_play_rounds = args.self_play_rounds
+    best_weights = None
+    best_fitness = -1.0
 
-        optimizer = GeneticOptimizer(
-            population_size=args.population,
-            num_generations=args.generations,
-            games_per_eval=args.games_per_eval,
-            num_workers=args.workers,
-        )
-        best_weights, best_fitness = optimizer.optimize()
+    clear_custom_opponents()
 
-    elif args.method == "cmaes":
-        try:
-            from sequence.scoring.optimizer import CMAESOptimizer
-        except ImportError:
-            print("CMA-ES requires scipy. Install with: pip install scipy")
-            sys.exit(1)
+    for round_num in range(1, self_play_rounds + 1):
+        if self_play_rounds > 1:
+            print(f"\n{'='*60}")
+            print(f"SELF-PLAY ROUND {round_num}/{self_play_rounds}")
+            print(f"{'='*60}\n")
 
-        print("Running CMA-ES optimizer...")
-        optimizer = CMAESOptimizer(
-            games_per_eval=args.games_per_eval,
-            num_workers=args.workers,
-        )
-        best_weights = optimizer.optimize()
-        best_fitness = -1.0  # Not tracked in CMA-ES
+        if args.method == "ga":
+            agent_type = "SmartAgent" if args.smart else "ScorerAgent"
+            opp_type = "Mixed (Lookahead2/Greedy/Defensive)" if args.mixed else "GreedyAgent"
+            print(f"Running Genetic Algorithm:")
+            print(f"  Agent: {agent_type}")
+            print(f"  Opponent: {opp_type}")
+            print(f"  Generations: {args.generations}")
+            print(f"  Population: {args.population}")
+            print(f"  Games per eval: {args.games_per_eval}")
+            print(f"  Lookahead: {args.lookahead}")
+            print()
 
-    # Save
+            optimizer = GeneticOptimizer(
+                population_size=args.population,
+                num_generations=args.generations,
+                games_per_eval=args.games_per_eval,
+                num_workers=args.workers,
+                use_smart_agent=args.smart,
+                use_mixed_opponents=args.mixed,
+                use_lookahead=args.lookahead,
+            )
+            best_weights, best_fitness = optimizer.optimize()
+
+        elif args.method == "cmaes":
+            try:
+                from sequence.scoring.optimizer import CMAESOptimizer
+            except ImportError:
+                print("CMA-ES requires cma. Install with: pip install cma")
+                sys.exit(1)
+
+            agent_type = "SmartAgent" if args.smart else "ScorerAgent"
+            opp_type = "Mixed (Lookahead2/Greedy/Defensive)" if args.mixed else "GreedyAgent"
+            sigma = getattr(args, "sigma", 5.0)
+            print(f"Running CMA-ES optimizer:")
+            print(f"  Agent: {agent_type}")
+            print(f"  Opponent: {opp_type}")
+            print(f"  Max iterations: {args.generations}")
+            print(f"  Games per eval: {args.games_per_eval}")
+            print(f"  Sigma0: {sigma}")
+            print()
+
+            optimizer = CMAESOptimizer(
+                games_per_eval=args.games_per_eval,
+                num_workers=args.workers,
+                maxiter=args.generations,
+                sigma0=sigma,
+                use_smart_agent=args.smart,
+                use_mixed_opponents=args.mixed,
+                use_lookahead=args.lookahead,
+            )
+            best_weights, best_fitness = optimizer.optimize()
+
+        # Save intermediate weights for self-play rounds
+        if self_play_rounds > 1:
+            round_path = output_path.with_stem(f"{output_path.stem}_round{round_num}")
+            with open(round_path, "w") as f:
+                json.dump(best_weights.to_dict(), f, indent=2)
+            print(f"Round {round_num} weights saved to: {round_path}")
+
+            # Add best weights as custom opponent for next round
+            if round_num < self_play_rounds:
+                add_custom_opponent(best_weights)
+                print(f"Added round {round_num} champion to opponent pool")
+
+    # Save final weights
     weights_dict = best_weights.to_dict()
     with open(output_path, "w") as f:
         json.dump(weights_dict, f, indent=2)
