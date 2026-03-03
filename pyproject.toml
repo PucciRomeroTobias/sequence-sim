@@ -22,12 +22,19 @@ sim = [
 analysis = [
     "pandas>=2.0",
     "scipy>=1.10",
+    "cma>=3.3",
 ]
 gui = [
     # tkinter is part of stdlib
 ]
+nn = [
+    "torch>=2.0",
+]
+lgbm = [
+    "lightgbm>=4.0",
+]
 all = [
-    "sequence-sim[dev,sim,analysis,gui]",
+    "sequence-sim[dev,sim,analysis,gui,nn,lgbm]",
 ]
 
 [tool.setuptools.packages.find]

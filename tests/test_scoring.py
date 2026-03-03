@@ -202,6 +202,137 @@ class TestFeatureExtraction:
         features = extract_features(state, TeamId.TEAM_0)
         assert features[10] >= 1  # corner_adjacency
 
+    # --- Advanced strategy features ---
+
+    def test_position_line_score(self):
+        """Chips in center should have higher position_line_score than edge chips."""
+        from sequence.core.board import POSITION_TO_LINES
+
+        state = _make_empty_state()
+        # Place one chip at a center position
+        center_pos = Position(5, 5)
+        state.board.place_chip(center_pos, TeamId.TEAM_0)
+        features = extract_features(state, TeamId.TEAM_0)
+        expected = len(POSITION_TO_LINES.get(center_pos, [])) / 12.0
+        assert features[28] == pytest.approx(expected)
+        assert features[28] > 0  # center positions have lines
+
+    def test_position_line_score_empty_board(self):
+        state = _make_empty_state()
+        features = extract_features(state, TeamId.TEAM_0)
+        assert features[28] == 0.0  # no chips → no score
+
+    def test_anchor_overlap_count_no_sequence(self):
+        """Without completed sequences, anchor_overlap_count should be 0."""
+        state = _make_empty_state()
+        _place_chips(state.board, [Position(3, 3), Position(4, 4)], TeamId.TEAM_0)
+        features = extract_features(state, TeamId.TEAM_0)
+        assert features[29] == 0  # no completed sequence → no anchors
+
+    def test_anchor_overlap_count_with_sequence(self):
+        """Completed sequence chips that participate in incomplete lines are anchors."""
+        state = _make_empty_state()
+        # Find a line without corners and complete it
+        for candidate_line in ALL_LINES:
+            positions = list(candidate_line)
+            if not any(state.board.is_corner(p) for p in positions):
+                line = positions
+                break
+        _place_chips(state.board, line, TeamId.TEAM_0)
+        for pos in line:
+            state.board.check_new_sequences(pos, TeamId.TEAM_0)
+        assert state.board.count_sequences(TeamId.TEAM_0) >= 1
+
+        features = extract_features(state, TeamId.TEAM_0)
+        # Chips in the completed sequence participate in other incomplete lines
+        # (most non-corner positions belong to multiple lines), so anchors > 0
+        assert features[29] > 0
+
+    def test_chip_clustering_single_quadrant(self):
+        """All chips in one quadrant → clustering = 1.0."""
+        state = _make_empty_state()
+        # Place chips in top-left quadrant (rows 0-4, cols 0-4)
+        _place_chips(state.board, [Position(1, 1), Position(2, 2), Position(3, 3)], TeamId.TEAM_0)
+        features = extract_features(state, TeamId.TEAM_0)
+        assert features[30] == pytest.approx(1.0)
+
+    def test_chip_clustering_spread(self):
+        """Chips spread across quadrants → clustering < 1.0."""
+        state = _make_empty_state()
+        # Place one chip in each of 4 quadrants
+        _place_chips(state.board, [
+            Position(1, 1),   # top-left
+            Position(1, 8),   # top-right
+            Position(8, 1),   # bottom-left
+            Position(8, 8),   # bottom-right
+        ], TeamId.TEAM_0)
+        features = extract_features(state, TeamId.TEAM_0)
+        assert features[30] == pytest.approx(0.25)  # 1 chip per quadrant / 4 total
+
+    def test_chip_clustering_no_chips(self):
+        state = _make_empty_state()
+        features = extract_features(state, TeamId.TEAM_0)
+        assert features[30] == 0.0  # max(quadrants)=0, total=max(0,1)=1 → 0/1
+
+    def test_early_jack_usage_penalty(self):
+        """early_jack_usage_penalty should reflect jack count and turn number."""
+        state = _make_empty_state()
+        # Hand with 0 jacks at turn 0: penalty = max(0, 1-0/50) * 1/(1+0) = 1.0
+        state.hands[0] = [
+            Card(Rank.TWO, Suit.HEARTS),
+            Card(Rank.THREE, Suit.HEARTS),
+        ]
+        features = extract_features(state, TeamId.TEAM_0)
+        assert features[31] == pytest.approx(1.0)
+
+        # Hand with 1 jack at turn 0: penalty = 1.0 * 1/(1+1) = 0.5
+        state.hands[0] = [
+            Card(Rank.JACK, Suit.DIAMONDS),  # two-eyed jack
+            Card(Rank.THREE, Suit.HEARTS),
+        ]
+        features = extract_features(state, TeamId.TEAM_0)
+        assert features[31] == pytest.approx(0.5)
+
+        # At turn >= 50: penalty = 0.0 regardless of jacks
+        late_state = GameState(
+            board=state.board,
+            hands=state.hands,
+            deck=state.deck,
+            current_team=TeamId.TEAM_0,
+            turn_number=60,
+        )
+        features_late = extract_features(late_state, TeamId.TEAM_0)
+        assert features_late[31] == pytest.approx(0.0)
+
+    def test_jack_save_value_early_game(self):
+        """Jacks in hand at turn 0 should produce positive jack_save_value."""
+        state = _make_empty_state()
+        state.hands[0] = [
+            Card(Rank.JACK, Suit.DIAMONDS),  # two-eyed
+            Card(Rank.JACK, Suit.HEARTS),    # one-eyed
+            Card(Rank.TWO, Suit.HEARTS),
+        ]
+        features = extract_features(state, TeamId.TEAM_0)
+        # 2 jacks * max(0, 1.0 - 0/50) = 2 * 1.0 = 2.0
+        assert features[32] == pytest.approx(2.0)
+
+    def test_jack_save_value_late_game(self):
+        """Jacks after turn 50 should have jack_save_value = 0."""
+        state = _make_empty_state()
+        state.hands[0] = [
+            Card(Rank.JACK, Suit.DIAMONDS),
+            Card(Rank.JACK, Suit.HEARTS),
+        ]
+        late_state = GameState(
+            board=state.board,
+            hands=state.hands,
+            deck=state.deck,
+            current_team=TeamId.TEAM_0,
+            turn_number=60,
+        )
+        features = extract_features(late_state, TeamId.TEAM_0)
+        assert features[32] == pytest.approx(0.0)
+
 
 # ---------------------------------------------------------------------------
 # Scoring function tests
@@ -227,6 +358,26 @@ class TestScoringFunction:
         scores = [s for _, s in ranked]
         for i in range(len(scores) - 1):
             assert scores[i] >= scores[i + 1]
+
+    def test_rank_actions_fast_matches_rank_actions(self):
+        """rank_actions_fast should produce same ranking as rank_actions."""
+        state = _make_empty_state()
+        # Place some chips to create a more interesting board state
+        _place_chips(state.board, [Position(3, 3), Position(4, 4), Position(5, 5)], TeamId.TEAM_0)
+        _place_chips(state.board, [Position(2, 5), Position(3, 6)], TeamId.TEAM_1)
+        sf = ScoringFunction(BALANCED_WEIGHTS)
+        legal = state.get_legal_actions(TeamId.TEAM_0)
+        if not legal:
+            pytest.skip("No legal actions")
+        ranked_slow = sf.rank_actions(state, legal, TeamId.TEAM_0)
+        ranked_fast = sf.rank_actions_fast(state, legal, TeamId.TEAM_0)
+        assert len(ranked_fast) == len(ranked_slow)
+        # Actions should be in the same order
+        for (a_slow, s_slow), (a_fast, s_fast) in zip(ranked_slow, ranked_fast):
+            assert a_slow == a_fast, f"Action mismatch: {a_slow} vs {a_fast}"
+            assert s_slow == pytest.approx(s_fast, abs=0.01), (
+                f"Score mismatch for {a_slow}: {s_slow} vs {s_fast}"
+            )
 
     def test_weights_serialization(self):
         w = BALANCED_WEIGHTS

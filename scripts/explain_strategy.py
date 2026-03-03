@@ -17,24 +17,46 @@ def main():
         default="data/weights/optimized.json",
         help="Path to weights JSON file",
     )
+    parser.add_argument(
+        "--preset",
+        type=str,
+        choices=["balanced", "defensive", "offensive", "smart"],
+        default=None,
+        help="Use a preset weight set instead of a file",
+    )
     args = parser.parse_args()
 
-    weights_path = Path(args.weights)
-    if not weights_path.exists():
-        print(f"Weights file not found: {weights_path}")
-        print("Run optimize_weights.py first, or use --weights to specify a file.")
-        sys.exit(1)
-
-    from sequence.scoring.scoring_function import ScoringWeights
+    from sequence.scoring.scoring_function import (
+        BALANCED_WEIGHTS, DEFENSIVE_WEIGHTS, OFFENSIVE_WEIGHTS, SMART_WEIGHTS,
+        ScoringWeights,
+    )
     from sequence.analysis.explainer import explain_weights, generate_report
 
-    with open(weights_path) as f:
-        data = json.load(f)
+    if args.preset:
+        presets = {
+            "balanced": BALANCED_WEIGHTS,
+            "defensive": DEFENSIVE_WEIGHTS,
+            "offensive": OFFENSIVE_WEIGHTS,
+            "smart": SMART_WEIGHTS,
+        }
+        weights = presets[args.preset]
+        source = f"preset:{args.preset}"
+    else:
+        weights_path = Path(args.weights)
+        if not weights_path.exists():
+            print(f"Weights file not found: {weights_path}")
+            print("Run optimize_weights.py first, or use --weights/--preset.")
+            sys.exit(1)
 
-    weights = ScoringWeights.from_dict(data)
+        with open(weights_path) as f:
+            data = json.load(f)
+
+        weights = ScoringWeights.from_dict(data)
+        source = str(weights_path)
 
     print("=" * 60)
     print("  SEQUENCE STRATEGY ANALYSIS")
+    print(f"  Source: {source}")
     print("=" * 60)
     print()
 
