@@ -85,10 +85,32 @@ data/           # Trained models (nn/, lgbm/)
 | `scorer` | Linear scoring with balanced weights | Medium |
 | `lookahead1` | Depth-1 minimax with scoring function | Medium-Strong |
 | `smart` | Card tracking + 33 features + instant decisions + lookahead | Strong |
-| `mcts` | Monte Carlo Tree Search (200 iterations) | Strong (slow) |
+| `mcts` | Monte Carlo Tree Search with determinization (200 iterations). See [caveat below](#important-caveat-mcts-as-oracle-in-a-hidden-information-game) — suboptimal in hidden-info games | Strong (slow) |
 | `hybrid` | LightGBM (MCTS-trained) candidate selection + linear lookahead | Strong |
 
 ## ML Experiments
+
+### Important caveat: MCTS as oracle in a hidden-information game
+
+Sequence is a **hidden-information game**: you cannot see your opponent's hand (5-7 cards), and the deck order is unknown. This is a fundamental distinction from perfect-information games like Chess or Go, and it has deep consequences for everything in this section.
+
+MCTS was designed for perfect-information games, where the entire game state is visible to both players. To apply it to Sequence, we use **determinization** (Information Set MCTS): before each search, we randomly sample a plausible opponent hand from the pool of unseen cards, then run standard MCTS on that fully-observable "determinized" state. We repeat this across multiple samples and aggregate visit counts.
+
+This approach has well-documented theoretical limitations:
+
+- **Strategy fusion**: The most fundamental problem. When averaging results across determinizations, MCTS can converge on an action that is "okay on average" but actually optimal in *none* of the individual scenarios. If action A is best when the opponent holds hand X, and action B is best when they hold hand Y, determinized MCTS might pick action C — mediocre in both cases but with more aggregated visits. This is a known failure mode that does not vanish with more iterations.
+
+- **Information leakage during search**: Within each determinized search, MCTS has full visibility of the sampled opponent hand. It explores lines that exploit this knowledge — knowledge the real player does not have. The resulting visit distributions are contaminated by information that should be hidden.
+
+- **No signaling or deception**: Optimal play in hidden-information games sometimes requires signaling (strategically revealing information) or deception (concealing your intentions). Determinized MCTS is structurally blind to these dynamics because it treats each determinization as a separate perfect-information game.
+
+- **No opponent modeling**: MCTS doesn't reason about what the opponent *knows* or can *infer* from your past actions. In a perfect-information game the opponent's best response is deterministic. In a hidden-information game, the opponent's optimal play depends on their beliefs about *your* hand, which determinized MCTS ignores entirely.
+
+- **No convergence guarantee**: In perfect-information games, MCTS provably converges to the minimax-optimal strategy given enough iterations. In hidden-information games with determinization, **this guarantee does not hold**. The algorithm converges to a different solution concept that can be arbitrarily far from Nash equilibrium and is exploitable by an informed opponent.
+
+**Bottom line**: All the ML experiments below use MCTS visit distributions as training signal. Since this "oracle" is itself suboptimal for the reasons above, the ML models are learning to imitate a flawed teacher. Any ceiling on ML performance here is not just about feature engineering or model capacity — it's bounded by the quality of the MCTS signal, which is fundamentally limited by the hidden-information nature of the game.
+
+A truly optimal approach would require algorithms designed for imperfect information (e.g., Counterfactual Regret Minimization, or proper Information Set MCTS variants like ISMCTS with opponent modeling), which are outside the current scope of this project.
 
 ### Neural Network (PyTorch)
 
@@ -120,10 +142,13 @@ python scripts/train_lgbm.py --data data/nn/training_data_combined.npz \
 
 ### Key Finding
 
-With 33 hand-crafted features, SmartAgent's linear scoring + depth-1 lookahead is near-optimal. ML models learn better action ranking but can't significantly outplay the linear model because:
-1. The 33 features are a lossy compression of the full game state
-2. SmartAgent's lookahead compensates for weaker initial ranking
-3. Ranking quality doesn't directly translate to game-winning ability
+With 33 hand-crafted features, SmartAgent's linear scoring + depth-1 lookahead is near-optimal *relative to the MCTS oracle*. ML models learn better action ranking but can't significantly outplay the linear model because:
+1. The MCTS oracle itself is suboptimal due to hidden information (see caveat above)
+2. The 33 features are a lossy compression of the full game state
+3. SmartAgent's lookahead compensates for weaker initial ranking
+4. Ranking quality doesn't directly translate to game-winning ability
+
+In other words: we hit the ceiling of what determinized MCTS can teach, not the ceiling of what's achievable in Sequence.
 
 ## Scripts
 
