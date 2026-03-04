@@ -2,6 +2,7 @@
 
 from .base import Agent
 from .defensive_agent import DefensiveAgent
+from .expert_agent import ExpertAgent
 from .greedy_agent import GreedyAgent
 from .offensive_agent import OffensiveAgent
 from .random_agent import RandomAgent
@@ -11,6 +12,7 @@ from .smart_agent import SmartAgent
 __all__ = [
     "Agent",
     "DefensiveAgent",
+    "ExpertAgent",
     "GreedyAgent",
     "NeuralAgent",
     "OffensiveAgent",

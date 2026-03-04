@@ -247,21 +247,21 @@ def _extend_features_batch(base: np.ndarray) -> np.ndarray:
     game_phase = np.clip((chips + opp_chips) / 80.0, 0.0, 1.0)
 
     derived = np.column_stack([
-        four_row * viable_four,                         # 33
-        three_row * viable_three,                       # 34
-        opp_four * one_eyed_jacks,                      # 35
-        opp_four * (1.0 / (1.0 + one_eyed_jacks)),     # 36
-        fork * (1.0 / (1.0 + opp_blockable)),           # 37
-        guaranteed * seq_proximity,                      # 38
-        four_row * opp_four,                             # 39
-        clustering * pos_line_score,                     # 40
-        center * shared_line,                            # 41
-        dead_cards * game_phase,                         # 42
-        jack_save * fork * game_phase,                   # 43
-        monopoly * viable_three,                         # 44
-        anchor_overlap * three_row,                      # 45
-        game_phase,                                      # 46
-        chips - opp_chips,                               # 47
+        four_row * viable_four,                         # 35
+        three_row * viable_three,                       # 36
+        opp_four * one_eyed_jacks,                      # 37
+        opp_four * (1.0 / (1.0 + one_eyed_jacks)),     # 38
+        fork * (1.0 / (1.0 + opp_blockable)),           # 39
+        guaranteed * seq_proximity,                      # 40
+        four_row * opp_four,                             # 41
+        clustering * pos_line_score,                     # 42
+        center * shared_line,                            # 43
+        dead_cards * game_phase,                         # 44
+        jack_save * fork * game_phase,                   # 45
+        monopoly * viable_three,                         # 46
+        anchor_overlap * three_row,                      # 47
+        game_phase,                                      # 48
+        chips - opp_chips,                               # 49
     ])
 
     return np.concatenate([base, derived], axis=1)

@@ -13,13 +13,13 @@ if TYPE_CHECKING:
     from ..core.card_tracker import CardTracker
     from ..core.game_state import GameState
 
-NUM_FEATURES = 33
+NUM_FEATURES = 35
 
 
 def extract_features(
     state: GameState, team: TeamId, tracker: CardTracker | None = None
 ) -> np.ndarray:
-    """Extract 33 features from the game state for a given team.
+    """Extract 35 features from the game state for a given team.
 
     Features (in order):
      0: completed_sequences
@@ -57,6 +57,8 @@ def extract_features(
     30: chip_clustering
     31: early_jack_usage_penalty
     32: jack_save_value
+    33: viable_line_connectivity
+    34: weighted_blocking
     """
     board = state.board
     chips = board.chips
@@ -80,6 +82,8 @@ def extract_features(
     opp_three_in_a_row = 0
     shared_line_potential = 0
     blocked_lines = 0
+    viable_line_connectivity = 0
+    weighted_blocking = 0
 
     # Card-tracking enhanced line features
     viable_four_in_a_row = 0
@@ -162,6 +166,14 @@ def extract_features(
         # Shared line potential
         if own_count >= 1 and opp_count == 0:
             shared_line_potential += 1
+
+        # Viable line connectivity: lines without opponent, 2+ own chips
+        if opp_count == 0 and own_total >= 2:
+            viable_line_connectivity += own_total - 1
+
+        # Weighted blocking: contested lines, weighted by opponent progress
+        if own_count > 0 and opp_count > 0:
+            weighted_blocking += opp_count
 
         # Dead line detection (requires tracker)
         if tracker:
@@ -386,19 +398,21 @@ def extract_features(
             chip_clustering,            # 30
             early_jack_usage_penalty,   # 31
             jack_save_value,            # 32
+            viable_line_connectivity,   # 33
+            weighted_blocking,          # 34
         ],
         dtype=np.float64,
     )
     return features
 
 
-NUM_EXTENDED_FEATURES = 33 + 15  # 33 base + 15 derived
+NUM_EXTENDED_FEATURES = 35 + 15  # 35 base + 15 derived
 
 
 def extract_features_extended(
     state: GameState, team: TeamId, tracker: CardTracker | None = None
 ) -> np.ndarray:
-    """Extract 33 base features + 15 derived interaction features.
+    """Extract 35 base features + 15 derived interaction features.
 
     The derived features capture non-linear interactions that a linear
     scoring function cannot represent:
@@ -408,7 +422,7 @@ def extract_features_extended(
     - Game phase interactions (early/mid/late adjustments)
     - Spatial synergies (clustering × line potential)
 
-    Returns numpy array of 48 float64 features.
+    Returns numpy array of 50 float64 features.
     """
     base = extract_features(state, team, tracker=tracker)
 
@@ -444,35 +458,35 @@ def extract_features_extended(
     game_phase = min(state.turn_number / 80.0, 1.0)
 
     derived = np.array([
-        # 33: Offensive completion potential: 4-in-a-row that can actually be completed
+        # 35: Offensive completion potential: 4-in-a-row that can actually be completed
         four_row * viable_four,
-        # 34: Building momentum: 3-in-a-row with viable completions
+        # 36: Building momentum: 3-in-a-row with viable completions
         three_row * viable_three,
-        # 35: Defensive urgency: opponent threats we can block with jacks
+        # 37: Defensive urgency: opponent threats we can block with jacks
         opp_four * one_eyed_jacks,
-        # 36: Unblockable danger: opponent has threats AND we can't block
+        # 38: Unblockable danger: opponent has threats AND we can't block
         opp_four * (1.0 / (1.0 + one_eyed_jacks)),
-        # 37: Fork power: forks are deadly when opponent lacks removal
+        # 39: Fork power: forks are deadly when opponent lacks removal
         fork * (1.0 / (1.0 + opp_blockable)),
-        # 38: Guaranteed + proximity = close to winning with certainty
+        # 40: Guaranteed + proximity = close to winning with certainty
         guaranteed * seq_proximity,
-        # 39: Race condition: both sides close to completing
+        # 41: Race condition: both sides close to completing
         four_row * opp_four,
-        # 40: Spatial dominance: clustering + line control
+        # 42: Spatial dominance: clustering + line control
         clustering * pos_line_score,
-        # 41: Center + shared lines = positional advantage
+        # 43: Center + shared lines = positional advantage
         center * shared_line,
-        # 42: Dead card burden scales with game phase
+        # 44: Dead card burden scales with game phase
         dead_cards * game_phase,
-        # 43: Jack value in late game (jacks + forks late = lethal)
+        # 45: Jack value in late game (jacks + forks late = lethal)
         jack_save * fork * game_phase,
-        # 44: Monopoly + viable lines = guaranteed progress
+        # 46: Monopoly + viable lines = guaranteed progress
         monopoly * viable_three,
-        # 45: Anchor reuse potential: completed sequences feeding new lines
+        # 47: Anchor reuse potential: completed sequences feeding new lines
         anchor_overlap * three_row,
-        # 46: Game phase itself (lets network learn phase-dependent strategies)
+        # 48: Game phase itself (lets network learn phase-dependent strategies)
         game_phase,
-        # 47: Material advantage (chip difference, useful for positional eval)
+        # 49: Material advantage (chip difference, useful for positional eval)
         chips - opp_chips,
     ], dtype=np.float64)
 

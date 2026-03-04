@@ -59,6 +59,32 @@ def _make_mcts_informed():
         use_heuristic_rollout=True,
     )
 
+def _make_expert():
+    from sequence.agents.expert_agent import ExpertAgent
+    return ExpertAgent(use_lookahead=True, lookahead_candidates=7)
+
+def _make_expert_optimized():
+    import json
+    from pathlib import Path as _P
+    from sequence.agents.expert_agent import ExpertAgent
+    from sequence.scoring.scoring_function import ScoringWeights
+    from sequence.scoring.normalization import FEATURE_SCALES_47
+    weights_path = _P("data/weights/expert_v2_stage2.json")
+    if not weights_path.exists():
+        weights_path = _P("data/weights/expert_v2_stage1.json")
+    if not weights_path.exists():
+        weights_path = _P("data/weights/expert_stage2.json")
+    if not weights_path.exists():
+        weights_path = _P("data/weights/expert_stage1.json")
+    with open(weights_path) as f:
+        w = ScoringWeights.from_dict(json.load(f))
+    return ExpertAgent(
+        weights=w,
+        scale_factors=FEATURE_SCALES_47,
+        use_lookahead=True,
+        lookahead_candidates=7,
+    )
+
 
 def _make_neural():
     from sequence.agents.neural_agent import NeuralAgent
@@ -90,6 +116,8 @@ AGENT_REGISTRY = {
     "mcts": _make_mcts_light,
     "smart": _make_smart,
     "mcts_informed": _make_mcts_informed,
+    "expert": _make_expert,
+    "expert_optimized": _make_expert_optimized,
 }
 
 # Register neural agent only if torch is available
@@ -154,18 +182,23 @@ def main():
             )
             result = tournament.run()
 
-            # Count wins by agent name, not team index (handles swapped sides)
-            type_a = type(AGENT_REGISTRY[name_a]()).__name__
-            type_b = type(AGENT_REGISTRY[name_b]()).__name__
+            # Count wins by game index: even games = [a,b], odd games = [b,a]
             wins_a = 0
             wins_b = 0
-            for r in result.records:
+            for game_idx, r in enumerate(result.records):
                 if r.winner is not None:
-                    winner_name = r.agent_names[r.winner]
-                    if winner_name == type_a:
-                        wins_a += 1
-                    elif winner_name == type_b:
-                        wins_b += 1
+                    # swap_sides=True: even-index games have a=team0, b=team1
+                    # odd-index games have b=team0, a=team1
+                    if game_idx % 2 == 0:
+                        if r.winner == 0:
+                            wins_a += 1
+                        else:
+                            wins_b += 1
+                    else:
+                        if r.winner == 0:
+                            wins_b += 1
+                        else:
+                            wins_a += 1
             draws = len(result.records) - wins_a - wins_b
 
             results[name_a][name_b] = wins_a

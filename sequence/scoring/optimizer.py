@@ -157,6 +157,58 @@ def _evaluate_weights_smart(args: tuple[np.ndarray, int, bool] | tuple[np.ndarra
     return wins / games_per_eval
 
 
+def _evaluate_weights_expert(
+    args: tuple[np.ndarray, int, bool, bool],
+) -> float:
+    """Evaluate a 47-weight vector using ExpertAgent with normalization.
+
+    Module-level function so it can be pickled for multiprocessing.
+    Args tuple: (weights_array, games_per_eval, use_mixed, use_lookahead)
+    """
+    from ..agents.expert_agent import ExpertAgent
+    from ..core.game import Game, GameConfig
+    from .normalization import FEATURE_SCALES_47
+
+    weights_array, games_per_eval, use_mixed, use_lookahead = args
+    w = ScoringWeights.from_array(weights_array)
+    wins = 0
+    for seed in range(games_per_eval):
+        if use_mixed:
+            opp_factory = lambda s=seed: _make_mixed_opponent(s)
+        else:
+            opp_factory = _default_opponent_factory
+        if seed % 2 == 0:
+            factories = [
+                lambda w=w, la=use_lookahead: ExpertAgent(
+                    weights=w,
+                    scale_factors=FEATURE_SCALES_47,
+                    use_lookahead=la,
+                    lookahead_candidates=7,
+                ),
+                opp_factory,
+            ]
+            win_idx = 0
+        else:
+            factories = [
+                opp_factory,
+                lambda w=w, la=use_lookahead: ExpertAgent(
+                    weights=w,
+                    scale_factors=FEATURE_SCALES_47,
+                    use_lookahead=la,
+                    lookahead_candidates=7,
+                ),
+            ]
+            win_idx = 1
+        game = Game(
+            agent_factories=factories,
+            config=GameConfig(seed=seed, max_turns=300),
+        )
+        record = game.play()
+        if record.winner == win_idx:
+            wins += 1
+    return wins / games_per_eval
+
+
 class GeneticOptimizer:
     """Optimize scoring weights using a genetic algorithm."""
 
@@ -176,6 +228,8 @@ class GeneticOptimizer:
         patience: int = 5,
         early_stop_epsilon: float = 0.001,
         use_lookahead: bool = False,
+        use_expert: bool = False,
+        frozen_indices: set[int] | None = None,
     ) -> None:
         self.population_size = population_size
         self.num_generations = num_generations
@@ -190,6 +244,8 @@ class GeneticOptimizer:
         self.patience = patience
         self.early_stop_epsilon = early_stop_epsilon
         self.use_lookahead = use_lookahead
+        self.use_expert = use_expert
+        self.frozen_indices: set[int] = frozen_indices or set()
         self._rng = random.Random(seed)
         self._np_rng = np.random.RandomState(seed)
 
@@ -202,51 +258,77 @@ class GeneticOptimizer:
         arr[4] = -abs(arr[4]) * 10
         return arr
 
-    def _initial_population(self) -> list[np.ndarray]:
+    def _initial_population(
+        self, initial_weights: np.ndarray | None = None,
+    ) -> list[np.ndarray]:
         """Create initial population seeded with known weight sets.
 
-        After the 4 presets, fills with Gaussian perturbations of SMART_WEIGHTS
-        (the best known weights) plus 2 random individuals for diversity.
+        If initial_weights is provided, uses it as the base for perturbations.
+        Otherwise uses the 4 preset weight sets as seeds.
+        After seeds, fills with Gaussian perturbations of the best base
+        plus 2 random individuals for diversity.
         """
-        population: list[np.ndarray] = [
-            BALANCED_WEIGHTS.to_array(),
-            DEFENSIVE_WEIGHTS.to_array(),
-            OFFENSIVE_WEIGHTS.to_array(),
-            SMART_WEIGHTS.to_array(),
-        ]
-        smart_arr = SMART_WEIGHTS.to_array()
-        # Fill most remaining slots with perturbations of SMART_WEIGHTS
+        if initial_weights is not None:
+            base_arr = initial_weights
+            population: list[np.ndarray] = [base_arr.copy()]
+        else:
+            population = [
+                BALANCED_WEIGHTS.to_array(),
+                DEFENSIVE_WEIGHTS.to_array(),
+                OFFENSIVE_WEIGHTS.to_array(),
+                SMART_WEIGHTS.to_array(),
+            ]
+            base_arr = SMART_WEIGHTS.to_array()
+
+        frozen = self.frozen_indices
+        # Fill most remaining slots with perturbations
         while len(population) < self.population_size - 2:
-            sigma = 0.1 * np.maximum(np.abs(smart_arr), 1.0)
-            perturbed = smart_arr + self._np_rng.normal(0, 1, size=NUM_WEIGHTS) * sigma
+            sigma = 0.1 * np.maximum(np.abs(base_arr), 1.0)
+            perturbed = base_arr + self._np_rng.normal(0, 1, size=NUM_WEIGHTS) * sigma
+            # Restore frozen indices
+            for idx in frozen:
+                if idx < NUM_WEIGHTS:
+                    perturbed[idx] = base_arr[idx]
             population.append(perturbed)
         # Keep 2 random individuals for diversity
         while len(population) < self.population_size:
-            population.append(self._random_weights())
+            rw = self._random_weights()
+            for idx in frozen:
+                if idx < NUM_WEIGHTS:
+                    rw[idx] = base_arr[idx]
+            population.append(rw)
         return population
+
+    def _get_eval_fn(self) -> tuple:
+        """Return (eval_function, args_builder) based on mode."""
+        if self.use_expert:
+            eval_fn = _evaluate_weights_expert
+            def build_args(w: np.ndarray) -> tuple:
+                return (w, self.games_per_eval, self.use_mixed_opponents, self.use_lookahead)
+            return eval_fn, build_args
+        elif self.use_smart_agent:
+            eval_fn = _evaluate_weights_smart
+            def build_args(w: np.ndarray) -> tuple:
+                return (w, self.games_per_eval, self.use_mixed_opponents, self.use_lookahead)
+            return eval_fn, build_args
+        else:
+            eval_fn = _evaluate_weights_vs_greedy
+            def build_args(w: np.ndarray) -> tuple:
+                return (w, self.games_per_eval)
+            return eval_fn, build_args
 
     def evaluate_fitness(self, weights: np.ndarray) -> float:
         """Evaluate a weight vector by playing games_per_eval games.
 
         Returns win rate as a float in [0, 1].
         """
-        if self.use_smart_agent:
-            return _evaluate_weights_smart(
-                (weights, self.games_per_eval, self.use_mixed_opponents, self.use_lookahead)
-            )
-        return _evaluate_weights_vs_greedy((weights, self.games_per_eval))
+        eval_fn, build_args = self._get_eval_fn()
+        return eval_fn(build_args(weights))
 
     def _evaluate_population(self, population: list[np.ndarray]) -> list[float]:
         """Evaluate fitness for the entire population, optionally in parallel."""
-        if self.use_smart_agent:
-            args_list = [
-                (w, self.games_per_eval, self.use_mixed_opponents, self.use_lookahead)
-                for w in population
-            ]
-            eval_fn = _evaluate_weights_smart
-        else:
-            args_list = [(w, self.games_per_eval) for w in population]
-            eval_fn = _evaluate_weights_vs_greedy
+        eval_fn, build_args = self._get_eval_fn()
+        args_list = [build_args(w) for w in population]
 
         if self.num_workers <= 1:
             return [eval_fn(a) for a in args_list]
@@ -275,31 +357,47 @@ class GeneticOptimizer:
         return parents
 
     def crossover(self, parent1: np.ndarray, parent2: np.ndarray) -> np.ndarray:
-        """BLX-alpha blend crossover."""
+        """BLX-alpha blend crossover, respecting frozen indices."""
         alpha = 0.5
         child = np.empty(NUM_WEIGHTS)
+        frozen = self.frozen_indices
         for i in range(NUM_WEIGHTS):
-            lo = min(parent1[i], parent2[i])
-            hi = max(parent1[i], parent2[i])
-            span = hi - lo
-            child[i] = self._np_rng.uniform(lo - alpha * span, hi + alpha * span)
+            if i in frozen:
+                child[i] = parent1[i]
+            else:
+                lo = min(parent1[i], parent2[i])
+                hi = max(parent1[i], parent2[i])
+                span = hi - lo
+                child[i] = self._np_rng.uniform(lo - alpha * span, hi + alpha * span)
         return child
 
     def mutate(self, weights: np.ndarray) -> np.ndarray:
-        """Gaussian mutation applied per weight with given probability."""
+        """Gaussian mutation applied per weight with given probability.
+
+        Frozen indices are never mutated.
+        """
         mutated = weights.copy()
+        frozen = self.frozen_indices
         for i in range(NUM_WEIGHTS):
+            if i in frozen:
+                continue
             if self._np_rng.random() < self.mutation_rate:
                 mutated[i] += self._np_rng.normal(0, self.mutation_sigma) * max(1.0, abs(mutated[i]))
         return mutated
 
-    def optimize(self) -> tuple[ScoringWeights, float]:
+    def optimize(
+        self, initial_weights: ScoringWeights | None = None,
+    ) -> tuple[ScoringWeights, float]:
         """Run the genetic algorithm and return the best weights and fitness.
+
+        Args:
+            initial_weights: If provided, uses as the base for initial population.
 
         Supports early stopping: if best_fitness doesn't improve by more than
         early_stop_epsilon for `patience` consecutive generations, stops early.
         """
-        population = self._initial_population()
+        init_arr = initial_weights.to_array() if initial_weights is not None else None
+        population = self._initial_population(initial_weights=init_arr)
         best_weights: np.ndarray = population[0].copy()
         best_fitness: float = 0.0
         prev_best: float = float("-inf")

@@ -52,14 +52,31 @@ FEATURE_NAMES: list[str] = [
     "chip_clustering",
     "early_jack_usage_penalty",
     "jack_save_value",
+    "viable_line_connectivity",
+    "weighted_blocking",
+    # Expert features (12 new)
+    "silent_threat_count",
+    "corner_line_progress",
+    "phantom_threat_count",
+    "opp_threat_reachability",
+    "permanent_disruption_potential",
+    "hand_flexibility",
+    "race_advantage",
+    "multi_block_value",
+    "key_card_count",
+    "urgency_clock",
+    "alive_line_position_score",
+    "open_ended_three_count",
 ]
 
-assert len(FEATURE_NAMES) == NUM_FEATURES
+NUM_BASE_FEATURES = NUM_FEATURES  # 35
+NUM_EXPERT_FEATURES = 47  # 35 base + 12 expert
+assert len(FEATURE_NAMES) == NUM_EXPERT_FEATURES
 
 
 @dataclass
 class ScoringWeights:
-    """Weights for the 33 scoring features."""
+    """Weights for scoring features (35 base + 12 expert = 47 total)."""
 
     completed_sequences: float = 0.0
     four_in_a_row: float = 0.0
@@ -96,6 +113,21 @@ class ScoringWeights:
     chip_clustering: float = 0.0
     early_jack_usage_penalty: float = 0.0
     jack_save_value: float = 0.0
+    viable_line_connectivity: float = 0.0
+    weighted_blocking: float = 0.0
+    # Expert features (default 0.0 for backward compat)
+    silent_threat_count: float = 0.0
+    corner_line_progress: float = 0.0
+    phantom_threat_count: float = 0.0
+    opp_threat_reachability: float = 0.0
+    permanent_disruption_potential: float = 0.0
+    hand_flexibility: float = 0.0
+    race_advantage: float = 0.0
+    multi_block_value: float = 0.0
+    key_card_count: float = 0.0
+    urgency_clock: float = 0.0
+    alive_line_position_score: float = 0.0
+    open_ended_three_count: float = 0.0
 
     def to_array(self) -> np.ndarray:
         return np.array(
@@ -133,13 +165,40 @@ class ScoringWeights:
 
 
 class ScoringFunction:
-    """Evaluates game states using weighted feature extraction."""
+    """Evaluates game states using weighted feature extraction.
 
-    __slots__ = ("weights", "_weight_array")
+    Supports two modes:
+    - Default (35 base features): identical to original behavior
+    - Expert (47 features): uses extract_expert_features() for 35 base + 12 expert
 
-    def __init__(self, weights: ScoringWeights) -> None:
+    When scale_factors is provided, pre-divides weights by scales for
+    normalized-space weights with zero runtime overhead.
+    """
+
+    __slots__ = ("weights", "_weight_array", "_use_expert", "_extract_fn")
+
+    def __init__(
+        self,
+        weights: ScoringWeights,
+        use_expert_features: bool = False,
+        scale_factors: np.ndarray | None = None,
+    ) -> None:
         self.weights = weights
-        self._weight_array = weights.to_array()
+        self._use_expert = use_expert_features
+
+        full_array = weights.to_array()
+        if use_expert_features:
+            from ..agents.expert.features import extract_expert_features
+            self._extract_fn = extract_expert_features
+            n = NUM_EXPERT_FEATURES
+        else:
+            self._extract_fn = extract_features
+            n = NUM_BASE_FEATURES
+
+        w = full_array[:n]
+        if scale_factors is not None:
+            w = w / scale_factors[:n]
+        self._weight_array = w
 
     def evaluate(
         self,
@@ -148,7 +207,7 @@ class ScoringFunction:
         tracker: CardTracker | None = None,
     ) -> float:
         """Compute a scalar score for the given team's position."""
-        features = extract_features(state, team, tracker=tracker)
+        features = self._extract_fn(state, team, tracker=tracker)
         return float(np.dot(self._weight_array, features))
 
     def rank_actions(
@@ -193,6 +252,7 @@ class ScoringFunction:
         hand = state.hands.get(team.value, [])
         team_val = team.value
         weight_array = self._weight_array
+        extract_fn = self._extract_fn
         scored: list[tuple[Action, float]] = []
 
         for action in legal_actions:
@@ -208,7 +268,7 @@ class ScoringFunction:
 
                 # Increment turn_number for feature extraction
                 state.turn_number += 1
-                features = extract_features(state, team, tracker=tracker)
+                features = extract_fn(state, team, tracker=tracker)
                 score = float(np.dot(weight_array, features))
                 state.turn_number -= 1
 

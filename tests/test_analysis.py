@@ -280,7 +280,7 @@ class TestExplainer:
     def test_rank_tips_includes_all_features(self):
         ranked = rank_tips_by_importance(BALANCED_WEIGHTS)
         names = [name for name, _ in ranked]
-        assert len(names) == 33
+        assert len(names) == 47
         assert "completed_sequences" in names
 
     def test_generate_report_without_records(self):

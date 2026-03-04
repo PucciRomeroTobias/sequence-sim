@@ -57,6 +57,22 @@ def main():
         default=1,
         help="Number of self-play rounds (each adds best from previous round as opponent)",
     )
+    parser.add_argument(
+        "--expert",
+        action="store_true",
+        help="Use ExpertAgent with 45 features + normalization",
+    )
+    parser.add_argument(
+        "--freeze-base",
+        action="store_true",
+        help="Freeze base features (indices 0-32), only optimize expert features",
+    )
+    parser.add_argument(
+        "--initial-weights",
+        type=str,
+        default=None,
+        help="Path to JSON file with initial weights",
+    )
     args = parser.parse_args()
 
     output_path = Path(args.output)
@@ -67,6 +83,19 @@ def main():
         add_custom_opponent,
         clear_custom_opponents,
     )
+    from sequence.scoring.scoring_function import ScoringWeights
+
+    # Load initial weights if provided
+    initial_weights = None
+    if args.initial_weights:
+        with open(args.initial_weights) as f:
+            initial_weights = ScoringWeights.from_dict(json.load(f))
+        print(f"Loaded initial weights from: {args.initial_weights}")
+
+    # Build frozen indices set
+    frozen_indices: set[int] = set()
+    if args.freeze_base:
+        frozen_indices = set(range(35))
 
     self_play_rounds = args.self_play_rounds
     best_weights = None
@@ -81,7 +110,12 @@ def main():
             print(f"{'='*60}\n")
 
         if args.method == "ga":
-            agent_type = "SmartAgent" if args.smart else "ScorerAgent"
+            if args.expert:
+                agent_type = "ExpertAgent (45 features + normalization)"
+            elif args.smart:
+                agent_type = "SmartAgent"
+            else:
+                agent_type = "ScorerAgent"
             opp_type = "Mixed (Lookahead2/Greedy/Defensive)" if args.mixed else "GreedyAgent"
             print(f"Running Genetic Algorithm:")
             print(f"  Agent: {agent_type}")
@@ -90,6 +124,10 @@ def main():
             print(f"  Population: {args.population}")
             print(f"  Games per eval: {args.games_per_eval}")
             print(f"  Lookahead: {args.lookahead}")
+            if frozen_indices:
+                print(f"  Frozen indices: 0-34 (base features)")
+            if initial_weights:
+                print(f"  Initial weights: {args.initial_weights}")
             print()
 
             optimizer = GeneticOptimizer(
@@ -100,8 +138,12 @@ def main():
                 use_smart_agent=args.smart,
                 use_mixed_opponents=args.mixed,
                 use_lookahead=args.lookahead,
+                use_expert=args.expert,
+                frozen_indices=frozen_indices,
             )
-            best_weights, best_fitness = optimizer.optimize()
+            best_weights, best_fitness = optimizer.optimize(
+                initial_weights=initial_weights,
+            )
 
         elif args.method == "cmaes":
             try:
@@ -110,7 +152,12 @@ def main():
                 print("CMA-ES requires cma. Install with: pip install cma")
                 sys.exit(1)
 
-            agent_type = "SmartAgent" if args.smart else "ScorerAgent"
+            if args.expert:
+                agent_type = "ExpertAgent (45 features + normalization)"
+            elif args.smart:
+                agent_type = "SmartAgent"
+            else:
+                agent_type = "ScorerAgent"
             opp_type = "Mixed (Lookahead2/Greedy/Defensive)" if args.mixed else "GreedyAgent"
             sigma = getattr(args, "sigma", 5.0)
             print(f"Running CMA-ES optimizer:")
@@ -130,7 +177,9 @@ def main():
                 use_mixed_opponents=args.mixed,
                 use_lookahead=args.lookahead,
             )
-            best_weights, best_fitness = optimizer.optimize()
+            best_weights, best_fitness = optimizer.optimize(
+                initial_weights=initial_weights,
+            )
 
         # Save intermediate weights for self-play rounds
         if self_play_rounds > 1:

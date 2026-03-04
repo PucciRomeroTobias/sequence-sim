@@ -71,7 +71,8 @@ class TestFeatureExtraction:
         state = _make_empty_state()
         features = extract_features(state, TeamId.TEAM_0)
         assert features.shape == (NUM_FEATURES,)
-        assert len(FEATURE_NAMES) == NUM_FEATURES
+        # FEATURE_NAMES covers all 47 features (35 base + 12 expert)
+        assert len(FEATURE_NAMES) == 47
 
     def test_empty_board_features(self):
         state = _make_empty_state()
@@ -391,9 +392,10 @@ class TestScoringFunction:
         assert np.allclose(w.to_array(), arr)
 
     def test_all_weight_sets_have_correct_size(self):
+        # ScoringWeights now has 47 fields (35 base + 12 expert)
         for w in [BALANCED_WEIGHTS, DEFENSIVE_WEIGHTS, OFFENSIVE_WEIGHTS]:
             arr = w.to_array()
-            assert arr.shape == (NUM_FEATURES,)
+            assert arr.shape == (47,)
 
 
 # ---------------------------------------------------------------------------
@@ -496,14 +498,14 @@ class TestGeneticOptimizer:
         p1 = BALANCED_WEIGHTS.to_array()
         p2 = OFFENSIVE_WEIGHTS.to_array()
         child = opt.crossover(p1, p2)
-        assert child.shape == (NUM_FEATURES,)
+        assert child.shape == (47,)
         assert np.all(np.isfinite(child))
 
     def test_mutate_preserves_shape(self):
         opt = GeneticOptimizer(seed=0)
         w = BALANCED_WEIGHTS.to_array()
         mutated = opt.mutate(w)
-        assert mutated.shape == (NUM_FEATURES,)
+        assert mutated.shape == (47,)
         assert np.all(np.isfinite(mutated))
 
     def test_select_returns_correct_size(self):
